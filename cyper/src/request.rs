@@ -321,6 +321,29 @@ impl RequestBuilder {
 
     /// Constructs the Request and sends it to the target URL, returning a
     /// future Response.
+    ///
+    /// When this returns, the body may still be streaming. To time out the
+    /// whole request, put the body read inside [`compio::time::timeout`] too:
+    ///
+    /// ```no_run
+    /// # #[compio::main]
+    /// # async fn main() -> cyper::Result<()> {
+    /// use std::time::Duration;
+    ///
+    /// let client = cyper::Client::new()?;
+    /// let body = compio::time::timeout(Duration::from_secs(10), async {
+    ///     client
+    ///         .get("https://example.com")?
+    ///         .send()
+    ///         .await?
+    ///         .bytes()
+    ///         .await
+    /// })
+    /// .await
+    /// .map_err(|_| cyper::Error::Timeout)??;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn send(self) -> Result<Response> {
         self.client.execute(self.request).await
     }
