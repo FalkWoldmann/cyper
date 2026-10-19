@@ -263,3 +263,56 @@ pub async fn accept_encoding_header_is_not_changed_if_set() {
 
     assert_eq!(res.status(), http::StatusCode::OK);
 }
+
+#[compio::test]
+#[cfg(tls)]
+async fn connect_timeout_on_stalled_handshake() {
+    use std::time::Duration;
+
+    // The kernel completes the TCP handshake, but nobody answers the TLS one.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let client = Client::builder()
+        .connect_timeout(Duration::from_millis(100))
+        .no_proxy()
+        .build()
+        .unwrap();
+    let res = compio::time::timeout(
+        Duration::from_secs(5),
+        client.get(format!("https://{addr}")).unwrap().send(),
+    )
+    .await
+    .expect("connect timeout didn't fire");
+
+    assert!(matches!(res, Err(cyper::Error::Timeout)), "{res:?}");
+}
+
+#[compio::test]
+async fn connect_timeout_ignores_slow_response() {
+    use std::time::Duration;
+
+    let server = server::http(move |_req| async {
+        // axum wants a `Send` handler.
+        send_wrapper::SendWrapper::new(compio::time::sleep(Duration::from_millis(300))).await;
+        "Hello"
+    })
+    .await;
+
+    let client = Client::builder()
+        .connect_timeout(Duration::from_millis(100))
+        .no_proxy()
+        .build()
+        .unwrap();
+    let text = client
+        .get(format!("http://{}/slow", server.addr()))
+        .unwrap()
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+
+    assert_eq!(text, "Hello");
+}

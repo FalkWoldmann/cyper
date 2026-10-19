@@ -73,8 +73,9 @@ cfg_if::cfg_if! {
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum Error {
-    /// The request is timeout.
-    #[error("request timeout")]
+    /// The operation timed out, e.g. a connect attempt that exceeded
+    /// [`ClientBuilder::connect_timeout`].
+    #[error("operation timed out")]
     Timeout,
     /// No TLS backend.
     #[error("no TLS backend available")]

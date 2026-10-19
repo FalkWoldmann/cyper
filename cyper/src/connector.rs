@@ -2,6 +2,7 @@ use std::{
     future::Future,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use compio::tls::TlsConnector;
@@ -25,6 +26,7 @@ use crate::{
 pub struct Connector {
     inner: HttpsConnector,
     proxies: SendWrapper<Shared<Vec<proxy::Matcher>>>,
+    connect_timeout: Option<Duration>,
 }
 
 impl Connector {
@@ -33,10 +35,12 @@ impl Connector {
         tls: Option<TlsConnector>,
         resolver: Option<SharedResolver>,
         proxies: Shared<Vec<proxy::Matcher>>,
+        connect_timeout: Option<Duration>,
     ) -> Self {
         Self {
             inner: HttpsConnector::new(tls, resolver),
             proxies: SendWrapper::new(proxies),
+            connect_timeout,
         }
     }
 }
@@ -51,17 +55,30 @@ impl Service<Uri> for Connector {
     }
 
     fn call(&mut self, dst: Uri) -> Self::Future {
+        let timeout = self.connect_timeout;
         for matcher in self.proxies.iter() {
             if let Some(intercepted) = matcher.intercept(&dst) {
-                return Box::pin(SendWrapper::new(connect_via_proxy(
-                    self.inner.clone(),
-                    dst,
-                    intercepted,
+                return Box::pin(SendWrapper::new(with_timeout(
+                    timeout,
+                    connect_via_proxy(self.inner.clone(), dst, intercepted),
                 )));
             }
         }
 
-        Box::pin(self.inner.call(dst).map_ok(|stream| stream.into_wrapped()))
+        let connect = self.inner.call(dst).map_ok(|stream| stream.into_wrapped());
+        Box::pin(SendWrapper::new(with_timeout(timeout, connect)))
+    }
+}
+
+async fn with_timeout<T>(
+    timeout: Option<Duration>,
+    connect: impl Future<Output = crate::Result<T>>,
+) -> crate::Result<T> {
+    match timeout {
+        Some(timeout) => compio::time::timeout(timeout, connect)
+            .await
+            .unwrap_or(Err(crate::Error::Timeout)),
+        None => connect.await,
     }
 }
 

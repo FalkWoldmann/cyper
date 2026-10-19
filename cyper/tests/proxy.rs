@@ -288,3 +288,27 @@ async fn proxy_multiple_matches_correct() {
     assert_eq!(res.status(), StatusCode::OK);
     assert_eq!(res.text().await.unwrap(), "OK");
 }
+
+#[cfg(tls)]
+#[compio::test]
+async fn tunnel_connect_timeout() {
+    use std::time::Duration;
+
+    // The proxy accepts the TCP connection but never answers the CONNECT.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let proxy_url = format!("http://{}", listener.local_addr().unwrap());
+
+    let client = Client::builder()
+        .proxy(Proxy::https(&proxy_url).unwrap())
+        .connect_timeout(Duration::from_millis(100))
+        .build()
+        .unwrap();
+    let res = compio::time::timeout(
+        Duration::from_secs(5),
+        client.get("https://cyper.local/prox").unwrap().send(),
+    )
+    .await
+    .expect("connect timeout didn't fire");
+
+    assert!(matches!(res, Err(cyper::Error::Timeout)), "{res:?}");
+}

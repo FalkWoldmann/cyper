@@ -1,5 +1,6 @@
 #[cfg(feature = "stream")]
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use cyper_core::{CompioExecutor, CompioTimer};
 use http::{HeaderValue, header::Entry};
@@ -266,7 +267,12 @@ impl Client {
     }
 
     async fn send_h1h2_request(&self, request: http::Request<Body>, url: &Url) -> Result<Response> {
-        let res = self.client.client.request(request).await?;
+        let res = self
+            .client
+            .client
+            .request(request)
+            .await
+            .map_err(unwrap_connect_timeout)?;
         Ok(Response::new(res, url.clone()))
     }
 
@@ -471,6 +477,7 @@ pub struct ClientBuilder {
     cookies: Option<RwLock<CookieStore>>,
     hickory_dns: bool,
     http2_only: bool,
+    connect_timeout: Option<Duration>,
 }
 
 impl Default for ClientBuilder {
@@ -495,6 +502,7 @@ impl ClientBuilder {
             cookies: None,
             hickory_dns: cfg!(feature = "hickory-dns"),
             http2_only: false,
+            connect_timeout: None,
         }
     }
 
@@ -530,7 +538,12 @@ impl ClientBuilder {
         {
             builder.http2_only(self.http2_only);
         }
-        let client = builder.build(Connector::new(tls, resolver.clone(), proxies.clone()));
+        let client = builder.build(Connector::new(
+            tls,
+            resolver.clone(),
+            proxies.clone(),
+            self.connect_timeout,
+        ));
 
         let proxies_maybe_http_auth = proxies.iter().any(|p| p.maybe_has_http_auth());
         let proxies_maybe_http_custom_headers =
@@ -648,6 +661,24 @@ impl ClientBuilder {
     /// This also disables the automatic usage of the "system" proxy.
     pub fn no_proxy(mut self) -> Self {
         self.no_proxy = true;
+        self
+    }
+
+    /// Set a timeout for establishing new connections.
+    ///
+    /// It's one deadline for the whole connect: DNS resolution, the TCP
+    /// connect to each resolved address in turn, the TLS handshake and any
+    /// proxy handshake. Requests sent on pooled connections are not affected.
+    /// When it elapses, the request fails with [`crate::Error::Timeout`]. With
+    /// `http2_prior_knowledge`, other requests waiting for that connection
+    /// fail with a connect error instead.
+    ///
+    /// It doesn't apply to HTTP/3 connections yet, including requests switched
+    /// to HTTP/3 through Alt-Svc.
+    ///
+    /// Default is no timeout.
+    pub fn connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = Some(timeout);
         self
     }
 
@@ -894,5 +925,18 @@ impl tower_service::Service<http::Request<Body>> for Client {
 
     fn call(&mut self, req: http::Request<Body>) -> Self::Future {
         (&*self).call(req)
+    }
+}
+
+/// hyper-util boxes connector errors, so a connect timeout would otherwise
+/// only show up as the source of a `HyperClient` error.
+fn unwrap_connect_timeout(err: hyper_util::client::legacy::Error) -> crate::Error {
+    let timed_out = err.is_connect()
+        && std::iter::successors(std::error::Error::source(&err), |e| e.source())
+            .any(|e| matches!(e.downcast_ref(), Some(crate::Error::Timeout)));
+    if timed_out {
+        crate::Error::Timeout
+    } else {
+        err.into()
     }
 }

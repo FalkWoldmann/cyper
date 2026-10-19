@@ -35,3 +35,34 @@ async fn resolve() {
     let text = res.text().await.expect("Failed to get text");
     assert_eq!("Hello", text);
 }
+
+struct StalledResolver;
+
+impl Resolve for StalledResolver {
+    type Err = cyper::Error;
+
+    async fn resolve(&self, _uri: &Uri) -> Result<impl Stream<Item = IpAddr> + '_, Self::Err> {
+        std::future::pending::<()>().await;
+        Ok(stream::empty())
+    }
+}
+
+#[compio::test]
+async fn resolve_connect_timeout() {
+    use std::time::Duration;
+
+    let client = Client::builder()
+        .custom_resolver(StalledResolver)
+        .connect_timeout(Duration::from_millis(100))
+        .no_proxy()
+        .build()
+        .unwrap();
+    let res = compio::time::timeout(
+        Duration::from_secs(5),
+        client.get("http://abc:1/").unwrap().send(),
+    )
+    .await
+    .expect("connect timeout didn't fire");
+
+    assert!(matches!(res, Err(cyper::Error::Timeout)), "{res:?}");
+}
